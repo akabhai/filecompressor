@@ -5,91 +5,63 @@
   <title>Video Compressor</title>
 
   <style>
-    body {
-      font-family: Arial, sans-serif;
-      padding: 20px;
-      background: #f8f8f8;
-    }
-    #log {
-      padding: 15px;
-      background: #fff;
-      border-radius: 8px;
-      margin-top: 20px;
-      border: 1px solid #ddd;
-      height: 150px;
-      overflow-y: auto;
-    }
-    button {
-      padding: 12px 20px;
-      border: none;
-      border-radius: 6px;
-      background: #2b7bff;
-      color: white;
-      cursor: pointer;
-    }
+    body { font-family: Arial; padding: 20px; background: #f0f0f0; }
+    #log { background: #fff; padding: 15px; border: 1px solid #ccc; border-radius: 8px; height: 150px; overflow-y: auto; margin-top: 20px; }
+    button { padding: 12px 20px; border: none; background: #2b7bff; color: white; border-radius: 6px; cursor: pointer; }
   </style>
 
-  <!-- FFmpeg WASM (Latest Working CDN) -->
+  <!-- FFmpeg WASM -->
   <script type="module">
     import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js";
 
     window.ffmpeg = new FFmpeg();
   </script>
 </head>
-
 <body>
 
-  <h2>Video Compressor (Browser-Only)</h2>
-
+  <h2>Advanced Video Compressor</h2>
   <input type="file" id="inputVideo" accept="video/*">
+
   <br><br>
   <button onclick="compressVideo()">Compress Video</button>
 
   <div id="log"></div>
 
-  <script type="module">
+<script>
+function log(msg) {
+    document.getElementById("log").innerHTML += msg + "<br>";
+}
 
-    const logBox = document.getElementById("log");
+/* NOW WE EXPOSE THE FUNCTION TO WINDOW */
+window.compressVideo = async function () {
+    const inputFile = document.getElementById("inputVideo").files[0];
+    if (!inputFile) { alert("Please select a video first!"); return; }
 
-    function log(msg) {
-      logBox.innerHTML += msg + "<br>";
-      logBox.scrollTop = logBox.scrollHeight;
-    }
+    log("Loading FFmpeg...");
+    await window.ffmpeg.load();
 
-    async function compressVideo() {
-      const inputFile = document.getElementById("inputVideo").files[0];
-      if (!inputFile) return alert("Select a video first!");
+    log("Reading file...");
+    const data = new Uint8Array(await inputFile.arrayBuffer());
+    await window.ffmpeg.writeFile("input.mp4", data);
 
-      log("Loading FFmpeg...");
-      await window.ffmpeg.load();
+    log("Compressing video... (this may take minutes)");
 
-      log("Reading file...");
-      const data = new Uint8Array(await inputFile.arrayBuffer());
-
-      window.ffmpeg.writeFile("input.mp4", data);
-
-      log("Compressing... (may take minutes)");
-      
-      // Low bitrate (smaller size)
-      await window.ffmpeg.exec([
+    await window.ffmpeg.exec([
         "-i", "input.mp4",
         "-vcodec", "libx264",
         "-crf", "28",
         "-preset", "veryfast",
         "output.mp4"
-      ]);
+    ]);
 
-      log("Finished! Preparing download...");
+    log("Preparing download...");
+    const output = await window.ffmpeg.readFile("output.mp4");
+    const blob = new Blob([output.buffer], { type: "video/mp4" });
 
-      const output = await window.ffmpeg.readFile("output.mp4");
-
-      const blob = new Blob([output.buffer], { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
-
-      log(`<a href="${url}" download="compressed.mp4">Download Compressed Video</a>`);
-    }
-
-  </script>
+    const url = URL.createObjectURL(blob);
+    log(`<a href='${url}' download='compressed.mp4'>Download Compressed Video</a>`);
+};  
+</script>
 
 </body>
 </html>
