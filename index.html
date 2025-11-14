@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>File Compressor — Images / PDFs / Videos (≤500MB each)</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    :root{--bg:#f3f6fb;--card:#fff;--accent:#2563eb;--muted:#6b7280}
+    body{font-family:Inter,system-ui,Arial;margin:0;background:var(--bg);color:#0f172a}
+    .wrap{max-width:1000px;margin:28px auto;padding:20px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    h1{margin:0;font-size:20px}
+    p.lead{margin:4px 0 0 0;color:var(--muted);font-size:13px}
+    .card{background:var(--card);border-radius:12px;padding:16px;margin-top:18px;box-shadow:0 6px 18px rgba(2,6,23,0.06)}
+    .controls{display:flex;gap:10px;flex-wrap:wrap}
+    input[type=file]{padding:8px;border-radius:8px;border:1px solid #e6eef8}
+    select,input[type=number]{padding:8px;border-radius:8px;border:1px solid #e6eef8}
+    button{padding:10px 14px;border-radius:8px;border:none;background:var(--accent);color:white;cursor:pointer;font-weight:600}
+    button.ghost{background:#fff;color:var(--accent);border:1px solid #cfe0ff}
+    .queue{margin-top:14px}
+    .item{display:flex;align-items:center;gap:12px;padding:10px;border-radius:10px;border:1px solid #eef3fb;margin-bottom:8px}
+    .meta{flex:1}
+    .name{font-weight:600}
+    .small{font-size:13px;color:var(--muted)}
+    .progress{height:10px;background:#eef6ff;border-radius:999px;overflow:hidden;margin-top:8px}
+    .progress > i{display:block;height:100%;width:0%;background:var(--accent);transition:width .2s}
+    .links{margin-top:8px}
+    .note{font-size:13px;color:#334155;margin-top:8px}
+    footer{margin-top:18px;color:var(--muted);font-size:13px}
+    .warning{color:#b91c1c;font-weight:700}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>File Compressor — Images, PDFs, Videos (≤500MB each)</h1>
+        <p class="lead">Client-side compression. Unlimited files in queue. Video compression requires a modern browser & GitHub Pages hosting.</p>
+      </div>
+      <div>
+        <button id="startQueueBtn">Start Queue</button>
+        <button id="clearQueueBtn" class="ghost">Clear Queue</button>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="controls">
+        <input id="filePicker" type="file" multiple />
+        <select id="modeSelect" title="Default action per file">
+          <option value="auto">Auto (choose by file type)</option>
+          <option value="image">Image compress</option>
+          <option value="pdf">PDF compress</option>
+          <option value="video">Video compress (ffmpeg)</option>
+        </select>
+        <label class="small">Max per-file size:
+          <strong>500 MB</strong>
+        </label>
+
+        <label class="small">Image quality:
+          <input id="imgQuality" type="number" min="10" max="95" step="5" value="80" style="width:70px; margin-left:6px" />
+        </label>
+
+        <label class="small">PDF quality (% scale):
+          <input id="pdfScale" type="number" min="30" max="100" step="10" value="80" style="width:70px; margin-left:6px" />
+        </label>
+
+        <label class="small">Video crf (lower = better quality):
+          <input id="videoCRF" type="number" min="18" max="35" step="1" value="28" style="width:70px; margin-left:6px" />
+        </label>
+      </div>
+
+      <div class="note">
+        <strong>Notes:</strong> Images & PDFs are safe on any host. Video compression requires a browser with <code>SharedArrayBuffer</code> support and proper COOP/COEP headers on the host (GitHub Pages + _headers). If your browser doesn't support it, video compression will be disabled.
+      </div>
+
+      <div class="queue card" id="queueList" style="margin-top:12px"></div>
+
+      <div style="margin-top:12px">
+        <div class="small">Queue status: <span id="queueStatus">Idle</span></div>
+        <div class="small">Global progress:</div>
+        <div class="progress"><i id="globalBar"></i></div>
+      </div>
+    </div>
+
+    <div class="card" id="outputCard" style="display:none;margin-top:14px">
+      <div><strong>Processed outputs</strong></div>
+      <div id="outputs" style="margin-top:8px"></div>
+    </div>
+
+    <footer>
+      <div class="small">Host tips for ffmpeg.wasm on GitHub Pages:</div>
+      <pre class="small" style="background:#fff;padding:8px;border-radius:8px;border:1px dashed #e6eef8;">
+/* Add this file at the repo root named "_headers" for Netlify or use GitHub Pages custom headers functionality.
+For Netlify format:
+  /_headers
+  /path/*:
+    Cross-Origin-Opener-Policy: same-origin
+    Cross-Origin-Embedder-Policy: require-corp
+
+Or for GitHub Pages (use static host or Cloudflare Pages) ensure COOP/COEP headers are set.
+</pre>
+    </footer>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+  <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- ffmpeg.wasm (core path set below) -->
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.8/dist/ffmpeg.min.js"></script>
+
+  <script>
+  // ============ Configuration ============
+  const MAX_FILE_BYTES = 500 * 1024 * 1024; // 500 MB
+  const USE_FFMPEG_CORE_PATH = 'https://unpkg.com/@ffmpeg/core@0.11.1/dist/ffmpeg-core.js'; // core path for ffmpeg.wasm
+
+  // UI refs
+  const filePicker = document.getElementById('filePicker');
+  const queueList = document.getElementById('queueList');
+  const startQueueBtn = document.getElementById('startQueueBtn');
+  const clearQueueBtn = document.getElementById('clearQueueBtn');
+  const modeSelect = document.getElementById('modeSelect');
+  const imgQuality = document.getElementById('imgQuality');
+  const pdfScale = document.getElementById('pdfScale');
+  const videoCRF = document.getElementById('videoCRF');
+  const queueStatus = document.getElementById('queueStatus');
+  const globalBar = document.getElementById('globalBar');
+  const outputs = document.getElementById('outputs');
+  const outputCard = document.getElementById('outputCard');
+
+  // Queue state
+  let queue = [];
+  let processing = false;
+
+  // ffmpeg instance & capability detection
+  const { createFFmpeg, fetchFile } = FFmpeg;
+  let ffmpeg = null;
+  let ffmpegReady = false;
+  let ffmpegSupported = (typeof SharedArrayBuffer !== 'undefined'); // heuristic
+
+  // init pdf.js worker
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.worker.min.js';
+
+  // Helpers
+  function humanBytes(n){
+    if(n < 1024) return n + ' B';
+    if(n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+    if(n < 1024*1024*1024) return (n/1024/1024).toFixed(1) + ' MB';
+    return (n/1024/1024/1024).toFixed(2) + ' GB';
+  }
+
+  function setGlobalProgress(p){ globalBar.style.width = Math.round(p) + '%'; }
+
+  function createQueueItem(file, suggestedMode){
+    const id = Math.random().toString(36).slice(2,9);
+    return { id, file, mode: suggestedMode || 'auto', status: 'waiting', progress: 0, result: null, error: null };
+  }
+
+  function renderQueue(){
+    queueList.innerHTML = '';
+    if(queue.length === 0) queueList.innerHTML = '<div class="small">Queue is empty — add files to compress.</div>';
+    queue.forEach(item=>{
+      const el = document.createElement('div'); el.className = 'item'; el.id = 'q-'+item.id;
+      el.innerHTML = `
+        <div style="width:48px;height:48px;border-radius:8px;background:#eef6ff;display:flex;align-items:center;justify-content:center;font-weight:700">${item.file.name.split('.').pop().toUpperCase()}</div>
+        <div class="meta">
+          <div class="name">${item.file.name}</div>
+          <div class="small">${humanBytes(item.file.size)} • Mode: ${item.mode} • <span id="st-${item.id}">${item.status}</span></div>
+          <div class="progress" style="margin-top:6px"><i id="p-${item.id}" style="width:${item.progress}%"></i></div>
+          <div class="links" id="links-${item.id}"></div>
+        </div>
+        <div>
+          <button class="ghost" onclick="removeFromQueue('${item.id}')">Remove</button>
+        </div>
+      `;
+      queueList.appendChild(el);
+    });
+  }
+
+  function removeFromQueue(id){
+    queue = queue.filter(q => q.id !== id);
+    renderQueue();
+  }
+
+  filePicker.addEventListener('change', (e)=>{
+    const files = Array.from(e.target.files || []);
+    for(const f of files){
+      // size check
+      if(f.size > MAX_FILE_BYTES){
+        alert(`Skipped "${f.name}" — exceeds ${humanBytes(MAX_FILE_BYTES)} limit.`);
+        continue;
+      }
+      // determine suggested mode
+      let ext = (f.name.split('.').pop() || '').toLowerCase();
+      let suggested='auto';
+      if(['jpg','jpeg','png','webp','gif','bmp'].includes(ext)) suggested='image';
+      else if(['pdf'].includes(ext)) suggested='pdf';
+      else if(['mp4','webm','mkv','mov','avi'].includes(ext)) suggested='video';
+      else suggested='auto';
+      queue.push(createQueueItem(f, suggested));
+    }
+    renderQueue();
+    filePicker.value = '';
+  });
+
+  clearQueueBtn.addEventListener('click', ()=>{
+    if(confirm('Clear the queue?')) { queue = []; renderQueue(); }
+  });
+
+  // initialize ffmpeg lazily (only when first video encountered)
+  async function ensureFFmpeg(){
+    if(!ffmpegSupported){
+      console.warn('SharedArrayBuffer not supported — ffmpeg disabled.');
+      return false;
+    }
+    if(ffmpegReady) return true;
+    if(!ffmpeg){
+      ffmpeg = createFFmpeg({ log: true, corePath: USE_FFMPEG_CORE_PATH });
+    }
+    queueStatus.innerText = 'Loading FFmpeg (for video support)...';
+    try {
+      await ffmpeg.load();
+      ffmpegReady = true;
+      queueStatus.innerText = 'FFmpeg loaded.';
+      return true;
+    } catch (err){
+      console.error('FFmpeg load failed', err);
+      queueStatus.innerText = 'FFmpeg load failed — video disabled.';
+      ffmpegSupported = false;
+      return false;
+    }
+  }
+
+  // ========== compression functions ==========
+
+  // IMAGE: compress using canvas
+  async function compressImage(file, quality=0.8, outType='image/jpeg'){
+    const imgURL = URL.createObjectURL(file);
+    const img = new Image();
+    img.src = imgURL;
+    await new Promise((res,rej)=>{ img.onload = res; img.onerror = rej; });
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    // convert to blob with quality
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, outType, quality));
+    return blob;
+  }
+
+  // PDF compression: render each page as image (scaled) then re-create PDF via pdf-lib
+  async function compressPDF(file, scalePercent = 80){
+    const arrayBuffer = await file.arrayBuffer();
+    const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
+    const pdf = await loadingTask.promise;
+    const { PDFDocument } = PDFLib;
+    const outPdf = await PDFDocument.create();
+    for(let i=1;i<=pdf.numPages;i++){
+      const page = await pdf.getPage(i);
+      // render at scale
+      const viewport = page.getViewport({ scale: (scalePercent/100) * 1.5 }); // base scale multiplier
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      const ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      // convert canvas to jpeg blob to reduce size
+      const jpegBlob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.8));
+      const imgBytes = new Uint8Array(await jpegBlob.arrayBuffer());
+      const img = await outPdf.embedJpg(imgBytes);
+      const pageDims = outPdf.addPage([img.width, img.height]);
+      pageDims.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+    }
+    const outBytes = await outPdf.save();
+    return new Blob([outBytes], { type: 'application/pdf' });
+  }
+
+  // VIDEO compression with ffmpeg: use CRF
+  async function compressVideo(file, crf=28){
+    if(file.size > MAX_FILE_BYTES) throw new Error('File exceeds max size');
+    if(!ffmpegSupported) throw new Error('FFmpeg not supported in this browser (SharedArrayBuffer missing).');
+    await ensureFFmpeg();
+    if(!ffmpegReady) throw new Error('FFmpeg failed to load.');
+
+    const name = 'input_' + Math.random().toString(36).slice(2,8) + '.' + (file.name.split('.').pop() || 'mp4');
+    const outName = 'out_' + name.split('.')[0] + '.mp4';
+    // write
+    ffmpeg.FS('writeFile', name, await fetchFile(file));
+    // run ffmpeg -i input -vcodec libx264 -crf <crf> -preset veryfast out.mp4
+    // use veryfast preset to reduce time
+    await ffmpeg.run('-i', name, '-vcodec', 'libx264', '-crf', String(crf), '-preset', 'veryfast', '-movflags', 'faststart', outName);
+    const data = ffmpeg.FS('readFile', outName);
+    // cleanup
+    try { ffmpeg.FS('unlink', name); ffmpeg.FS('unlink', outName); } catch(e){}
+    return new Blob([data.buffer], { type: 'video/mp4' });
+  }
+
+  // ========== queue processing ==========
+
+  async function processQueue(){
+    if(processing) return;
+    processing = true;
+    outputCard.style.display = 'none';
+    outputs.innerHTML = '';
+    let total = queue.length;
+    let idx = 0;
+    for(const item of queue.slice()){ // copy array to allow removal during loop
+      idx++;
+      queueStatus.innerText = `Processing ${idx}/${total}: ${item.file.name}`;
+      updateQueueItem(item.id, { status: 'processing' });
+      try {
+        const ext = (item.file.name.split('.').pop()||'').toLowerCase();
+        let mode = item.mode;
+        if(mode === 'auto'){
+          if(['jpg','jpeg','png','webp','bmp','gif'].includes(ext)) mode = 'image';
+          else if(ext === 'pdf') mode = 'pdf';
+          else if(['mp4','webm','mkv','mov','avi'].includes(ext)) mode = 'video';
+          else mode = 'image';
+        }
+
+        let resultBlob = null;
+        if(mode === 'image'){
+          const outType = (item.file.type && item.file.type.startsWith('image/')) ? item.file.type : 'image/jpeg';
+          const q = Math.max(0.1, Math.min(0.95, parseInt(imgQuality.value)/100));
+          updateQueueItem(item.id, { status: 'compressing image' });
+          resultBlob = await compressImage(item.file, q, outType);
+        } else if(mode === 'pdf'){
+          updateQueueItem(item.id, { status: 'compressing pdf' });
+          const scale = Math.max(30, Math.min(100, parseInt(pdfScale.value)));
+          resultBlob = await compressPDF(item.file, scale);
+        } else if(mode === 'video'){
+          if(!ffmpegSupported){ throw new Error('Video compression not supported in this browser.'); }
+          updateQueueItem(item.id, { status: 'compressing video' });
+          const crf = Math.max(18, Math.min(35, parseInt(videoCRF.value)));
+          resultBlob = await compressVideo(item.file, crf);
+        } else {
+          throw new Error('Unsupported mode: ' + mode);
+        }
+
+        // finished
+        updateQueueItem(item.id, { status: 'done', progress: 100, result: resultBlob });
+        showOutput(item.file.name, resultBlob);
+      } catch (err){
+        console.error('Item failed', item, err);
+        updateQueueItem(item.id, { status: 'error', error: String(err) });
+      } finally {
+        // remove processed item from queue
+        queue = queue.filter(q => q.id !== item.id);
+        renderQueue();
+        setGlobalProgressIncrement(total ? Math.round((idx/total)*100) : 100);
+      }
+    }
+    queueStatus.innerText = 'Idle — queue finished.';
+    processing = false;
+    outputCard.style.display = outputs.children.length ? 'block' : 'none';
+    setGlobalProgress(100);
+  }
+
+  function updateQueueItem(id, patch){
+    const item = queue.find(q=>q.id===id);
+    if(!item) return;
+    Object.assign(item, patch);
+    // update UI
+    const st = document.getElementById('st-'+id); if(st) st.innerText = item.status;
+    const pbar = document.getElementById('p-'+id); if(pbar) pbar.style.width = (item.progress || 0) + '%';
+    const links = document.getElementById('links-'+id);
+    if(links && item.result && !item._linked){
+      const blob = item.result;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'compressed-' + item.file.name; a.innerText = 'Download';
+      links.appendChild(a); item._linked = true;
+    }
+  }
+
+  function setGlobalProgressIncrement(p){
+    setGlobalProgress(p);
+  }
+
+  function showOutput(originalName, blob){
+    outputCard.style.display = 'block';
+    const wrap = document.createElement('div'); wrap.style.padding='8px'; wrap.style.borderTop='1px solid #eef6ff';
+    const url = URL.createObjectURL(blob);
+    const sizeBefore = humanBytes(0);
+    const row = document.createElement('div');
+    row.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center">
+      <div><strong>${originalName}</strong><div class="small">Result: <a href="${url}" download="compressed-${originalName}">Download</a></div></div>
+      <div class="small">${humanBytes(blob.size)}</div>
+    </div>`;
+    wrap.appendChild(row);
+    outputs.prepend(wrap);
+  }
+
+  // start / clear handlers
+  startQueueBtn.addEventListener('click', async ()=>{
+    if(queue.length === 0) return alert('Queue is empty');
+    // if any video exists and ffmpeg not loaded, try to load
+    const hasVideo = queue.some(q => (q.mode === 'video' || q.mode === 'auto') && /mp4|webm|mkv|mov|avi/i.test(q.file.name));
+    if(hasVideo && !ffmpegReady && ffmpegSupported){
+      await ensureFFmpeg(); // attempt to load
+    } else if(hasVideo && !ffmpegSupported){
+      alert('Video compression is not supported in this browser. Use a modern desktop browser and host with COOP/COEP (GitHub Pages recommended). Videos will be skipped.');
+    }
+    processQueue();
+  });
+
+  // clear outputs/queue
+  clearQueueBtn.addEventListener('click', ()=>{ if(confirm('Clear queue and outputs?')){ queue = []; outputs.innerHTML=''; outputCard.style.display='none'; renderQueue(); } });
+
+  // initial render
+  renderQueue();
+
+  // Expose removeFromQueue to global for onclick
+  window.removeFromQueue = removeFromQueue;
+  </script>
+</body>
+</html>
